@@ -12,6 +12,27 @@ Sumber data terdiri dari sembilan file CSV Olist yang disimpan pada `data/raw/`.
 
 Data asli dipertahankan pada Bronze untuk kebutuhan audit, reproduksibilitas, dan pemrosesan ulang.
 
+### 2.1 Jumlah Baris yang Diharapkan
+
+Jumlah baris berikut berasal dari pemeriksaan sembilan CSV menggunakan `python pipeline.py check` pada tahap T0.
+
+| Dataset | Expected rows |
+|---|---:|
+| `olist_customers_dataset.csv` | 99.441 |
+| `olist_geolocation_dataset.csv` | 1.000.163 |
+| `olist_order_items_dataset.csv` | 112.650 |
+| `olist_order_payments_dataset.csv` | 103.886 |
+| `olist_order_reviews_dataset.csv` | 99.224 |
+| `olist_orders_dataset.csv` | 99.441 |
+| `olist_products_dataset.csv` | 32.951 |
+| `olist_sellers_dataset.csv` | 3.095 |
+| `product_category_name_translation.csv` | 71 |
+
+Jumlah baris merupakan baseline dataset sumber yang digunakan dalam proyek ini. Perubahan jumlah baris harus diperiksa dan didokumentasikan sebelum data diproses pada tahap berikutnya.
+
+Validasi jumlah baris dan checksum dilakukan menggunakan `python pipeline.py check`, dengan evidence pada `outputs/dataset_check.md`.
+
+
 ## 3. Grain dan Natural Key
 
 | Dataset | Grain sumber | Natural key / kebijakan identifikasi |
@@ -182,7 +203,27 @@ Natural key: `seller_id`.
 
 Natural key: `product_category_name`.
 
-File dibaca menggunakan `utf-8-sig` agar Byte Order Mark (BOM), jika tersedia, tidak dianggap sebagai bagian nama kolom pertama.
+File dibaca menggunakan `utf-8-sig` agar Byte Order Mark (BOM),
+jika tersedia, tidak dianggap sebagai bagian nama kolom pertama.
+
+**Hasil pemeriksaan BOM (T0):**
+
+Pemeriksaan menggunakan `python scripts/check_bom.py`
+menghasilkan:
+
+- UTF-8: `'product_category_name'`
+- UTF-8-SIG: `'product_category_name'`
+- First 3 bytes: `b'\xef\xbb\xbf'`
+- Has UTF-8 BOM: `True`
+
+Hasil ini membuktikan bahwa file sumber mengandung UTF-8 BOM.
+Versi pandas yang digunakan berhasil membaca nama kolom
+dengan benar menggunakan kedua encoding tersebut.
+
+**Keputusan penanganan:**
+Pada T1 (Bronze), byte asli CSV dipertahankan.
+Pada T2 (Silver), file dibaca menggunakan `utf-8-sig`
+untuk memastikan nama kolom konsisten.
 
 ### 4.10 Aturan Parsing Umum
 
@@ -256,27 +297,33 @@ Angka merupakan baseline dataset saat ini, bukan hasil pengujian implementasi Si
 
 ### 6.1 Daftar Temuan
 
-| ID | Temuan | Jumlah | Dampak | Keputusan penanganan |
-|---|---|---:|---|---|
-| F01 | Baris geolocation duplikat persis | 261.831 | Membebani penyimpanan dan dapat memengaruhi agregasi lokasi | Bronze tetap utuh; Silver melakukan deduplikasi deterministik sesuai kebijakan |
-| F02 | ZIP prefix geolocation tidak unik | 981.148 baris duplikat key | ZIP prefix tidak dapat menjadi PK data observasi | Pertahankan observasi; bentuk satu representasi per ZIP prefix pada `dim_geo` |
-| F03 | `review_id` tidak unik | 814 duplikat key | PK tunggal `review_id` tidak valid | Gunakan `(review_id, order_id)` sebagai natural key sumber |
-| F04 | Order memiliki lebih dari satu review | 547 order | Dapat menggandakan baris `fact_review` | Tetapkan satu review representatif per order pada T4 |
-| F05 | Order tanpa item | 775 order | Order berisiko hilang jika menggunakan `INNER JOIN` | Pertahankan order dan tandai `order_without_items` |
-| F06 | Order tanpa pembayaran | 1 order | Rekonsiliasi pembayaran tidak lengkap | Pertahankan order dan tandai `order_without_payments` |
-| F07 | Orang yang memiliki lebih dari satu `customer_id` | 2.997 orang | Penghitungan pelanggan berpotensi berlebihan | Gunakan `customer_unique_id` untuk identitas orang pada `dim_customer` |
-| F08 | Status `delivered` tanpa tanggal diterima | 8 order | Durasi dan keterlambatan tidak dapat ditentukan | Pertahankan order; tandai `delivered_missing_date`; metrik yang membutuhkan tanggal aktual bernilai null |
-| F09 | Tanggal diterima sebelum penyerahan ke kurir | 23 order | Kronologi pengiriman tidak konsisten | Tandai `delivery_before_carrier`; jangan koreksi otomatis |
-| F10 | Koordinat di luar batas perkiraan Brasil | 11.687 observasi | Lokasi representatif dapat terdistorsi | Tandai anomali; gunakan koordinat valid untuk agregasi lokasi |
-| F11 | Selisih pembayaran > BRL 0,01 | 1.076 order | Nilai transaksi dan pembayaran tidak selalu cocok | Tandai `payment_mismatch`; telusuri komponen selisih di mart rekonsiliasi |
-| F12 | `order_approved_at` kosong | 160 order | Waktu persetujuan tidak tersedia | Pertahankan null; evaluasi berdasarkan status order |
-| F13 | `order_delivered_carrier_date` kosong | 1.783 order | Durasi proses pengiriman sebagian order tidak tersedia | Pertahankan null; evaluasi berdasarkan status order |
-| F14 | `order_delivered_customer_date` kosong | 2.965 order | Tidak semua order memiliki tanggal diterima | Pertahankan null; evaluasi berdasarkan status order |
-| F15 | Judul komentar review kosong | 87.656 review | Analisis teks judul tidak lengkap | Pertahankan null karena komentar bersifat opsional |
-| F16 | Isi komentar review kosong | 58.247 review | Analisis sentimen berbasis teks tidak mencakup semua review | Pertahankan null; `review_score` tetap dapat dianalisis |
-| F17 | Kategori dan atribut deskriptif produk tidak lengkap | 610 produk pada setiap kolom kategori/nama/deskripsi/jumlah foto | Dimensi produk memiliki atribut yang tidak lengkap | Pertahankan null atau gunakan label `unknown` pada atribut analitis sesuai kebutuhan |
-| F18 | Berat dan dimensi fisik produk kosong | 2 produk pada setiap kolom berat, panjang, tinggi, dan lebar | Analisis logistik mempunyai atribut yang tidak lengkap | Pertahankan null; jangan mengubah nilai hilang menjadi nol |
-| F19 | `shipping_limit_date` mencapai tahun 2020 | Maksimum 2020-04-09 22:35:08 | Nilai tanggal jauh melampaui periode utama order | Investigasi hubungan dengan tanggal pembelian; jangan hapus otomatis |
+#### Pemetaan Tahap Implementasi Temuan
+
+Tabel ini melengkapi keputusan penanganan pada daftar temuan F01–F19. Setiap temuan memiliki tahap implementasi agar penanganannya dapat ditelusuri dari Data Contract ke pipeline.
+
+| ID | Tahap implementasi | Tindakan yang direncanakan |
+|---|---|---|
+| F01 | T2 — Silver | Deduplikasi baris geolocation yang identik secara deterministik |
+| F02 | T4 — Data Warehouse | Membentuk satu representasi lokasi per ZIP prefix pada `dim_geo` |
+| F03 | T2 — Silver | Memvalidasi keunikan composite key `(review_id, order_id)` |
+| F04 | T2 — Silver; T4 — DW | Menandai multiple reviews dan memilih review representatif per order |
+| F05 | T2 — Silver; T4 — DW | Menandai order tanpa item dan mempertahankannya di `fact_order` |
+| F06 | T2 — Silver; T5 — Mart | Menandai order tanpa pembayaran dan melaporkannya pada rekonsiliasi |
+| F07 | T4 — Data Warehouse | Menggunakan `customer_unique_id` sebagai identitas orang di `dim_customer` |
+| F08 | T2 — Silver; T4 — DW | Menandai tanggal pengiriman yang hilang dan menjaga metrik terkait tetap null |
+| F09 | T2 — Silver | Menandai anomali kronologi pengiriman tanpa mengubah tanggal sumber |
+| F10 | T2 — Silver; T4 — DW | Menandai koordinat di luar batas dan mengecualikannya dari agregasi lokasi valid |
+| F11 | T2 — Silver; T5 — Mart | Menandai selisih pembayaran dan menyediakan analisis rekonsiliasi per order |
+| F12 | T2 — Silver | Mempertahankan null pada tanggal persetujuan dan memeriksa konteks status |
+| F13 | T2 — Silver | Mempertahankan null pada tanggal penyerahan ke kurir dan memeriksa konteks status |
+| F14 | T2 — Silver; T4 — DW | Mempertahankan null tanggal diterima dan mencegah perhitungan durasi yang tidak valid |
+| F15 | T2 — Silver | Mempertahankan null judul komentar review sebagai atribut opsional |
+| F16 | T2 — Silver | Mempertahankan null isi komentar review sebagai atribut opsional |
+| F17 | T2 — Silver; T4 — DW | Mempertahankan null atribut produk serta menggunakan fallback jika dibutuhkan untuk analisis |
+| F18 | T2 — Silver | Mempertahankan null berat dan dimensi produk tanpa menggantinya menjadi nol |
+| F19 | T2 — Silver | Menandai tanggal batas pengiriman yang menyimpang untuk investigasi, tanpa menghapus otomatis |
+
+**Catatan:** Tahap di atas merupakan rencana implementasi. Bukti bahwa aturan benar-benar berjalan akan dihasilkan saat T2, T4, dan T5 dikerjakan.
 
 ### 6.2 Kebijakan Prioritas Penanganan
 

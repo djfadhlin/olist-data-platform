@@ -85,3 +85,17 @@ Jika tabel geolocation mentah langsung di-join menggunakan ZIP prefix, satu pela
 Kesalahan yang paling berbahaya dalam analisis bukan selalu error yang menghentikan program, tetapi angka yang terlihat wajar meskipun dihitung menggunakan grain, join, atau definisi bisnis yang salah.
 
 Oleh karena itu, Data Contract T0 menjadi acuan untuk validasi kualitas di T2, penetapan grain dan key di T4, serta rekonsiliasi dan mart analitis di T5.
+
+## Alat bantu
+
+Dalam pengembangan proyek **Olist Data Platform**, saya menggunakan beberapa alat bantu:
+
+| Alat | Penggunaan |
+|---|---|
+| ChatGPT (OpenAI) | Membantu memahami persyaratan tugas, menjelaskan konsep Data Engineering, menyusun dan merefaktor kode profiling, membantu debugging, serta menyusun dokumentasi dan Data Contract. |
+| Visual Studio Code | Editor untuk menulis dan menjalankan kode Python, SQL, serta dokumentasi Markdown. |
+| Python dan pandas | Pemeriksaan CSV, profiling, analisis kualitas data, dan pembuatan laporan otomatis. |
+| Git | Mengelola versi kode dan menyimpan checkpoint pengembangan. |
+| Docker Desktop | Menjalankan infrastruktur lokal PostgreSQL, Kafka, MinIO, dan Jupyter. |
+
+**Batas penggunaan AI:** ChatGPT digunakan sebagai pendamping pembelajaran dan pengembangan. Kode dan perintah yang disarankan dijalankan serta diperiksa menggunakan dataset Olist pada lingkungan lokal. Hasil pengujian yang belum dilaksanakan tidak diklaim sebagai keberhasilan implementasi.

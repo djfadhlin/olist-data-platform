@@ -1,0 +1,23 @@
+.env
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+deck/node_modules/
+data/raw/*.csv
+data/silver/
+data/quarantine/
+outputs/*.json
+!outputs/.gitkeep
+
+# Python virtual environment
+.venv/
+venv/
+
+# Local backups
+*_backup.py
+*.bak
+
+# Local operating system files
+.DS_Store
+Thumbs.db

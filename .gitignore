@@ -21,3 +21,6 @@ venv/
 # Local operating system files
 .DS_Store
 Thumbs.db
+
+# Riwayat eksekusi Bronze (runtime)
+outputs/bronze_runs.jsonl

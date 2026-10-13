@@ -1,3 +1,6 @@
+import json
+from collections import Counter
+
 from datetime import datetime, timezone
 
 from olist.bronze import (
@@ -13,6 +16,30 @@ def main():
 
     report_path = RAW_DIR.parent.parent / "outputs" / "bronze_report.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    history_path = report_path.parent / "bronze_runs.jsonl"
+
+    if not history_path.exists():
+        raise FileNotFoundError(
+            f"Run history belum tersedia: {history_path}"
+        )
+
+    with history_path.open("r", encoding="utf-8") as file:
+        records = [
+            json.loads(line)
+            for line in file
+            if line.strip()
+        ]
+
+    if not records:
+        raise ValueError("Run history masih kosong")
+
+    latest_run = records[-1]
+
+    status_counts = Counter(
+        result["status"]
+        for result in latest_run["results"]
+    )
 
     lines = [
         "# Bronze Ingestion Report",
@@ -88,6 +115,26 @@ def main():
         "before the initial batch ingestion.",
         "",
     ])
+
+    lines.extend([
+        "",
+        "## Latest Recorded Ingestion Run",
+        "",
+        f"- Started at (UTC): {latest_run['started_at']}",
+        f"- Duration: {latest_run['elapsed_seconds']:.2f} seconds",
+        f"- Total datasets: {latest_run['total_datasets']}",
+        f"- Uploaded: {status_counts.get('uploaded', 0)}",
+        f"- Unchanged: {status_counts.get('unchanged', 0)}",
+        f"- New versions: {status_counts.get('new_version', 0)}",
+        "",
+        "| Dataset | Status |",
+        "|---|---|",
+    ])
+
+    for result in latest_run["results"]:
+        lines.append(
+            f"| {result['table']} | {result['status']} |"
+        )
 
     report_path.write_text(
         "\n".join(lines),

@@ -1,6 +1,6 @@
 # Bronze Ingestion Report
 
-Generated at: 2026-10-13T09:55:03.319791+00:00
+Generated at: 2026-10-13T10:03:14.322125+00:00
 
 ## Dataset Inventory
 
@@ -41,3 +41,25 @@ Generated at: 2026-10-13T09:55:03.319791+00:00
 
 Note: The translation dataset was uploaded separately
 before the initial batch ingestion.
+
+
+## Latest Recorded Ingestion Run
+
+- Started at (UTC): 2026-10-13T10:00:34.867795+00:00
+- Duration: 0.56 seconds
+- Total datasets: 9
+- Uploaded: 0
+- Unchanged: 9
+- New versions: 0
+
+| Dataset | Status |
+|---|---|
+| olist_customers_dataset | unchanged |
+| olist_geolocation_dataset | unchanged |
+| olist_order_items_dataset | unchanged |
+| olist_order_payments_dataset | unchanged |
+| olist_order_reviews_dataset | unchanged |
+| olist_orders_dataset | unchanged |
+| olist_products_dataset | unchanged |
+| olist_sellers_dataset | unchanged |
+| product_category_name_translation | unchanged |

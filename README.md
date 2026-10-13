@@ -99,3 +99,39 @@ Dalam pengembangan proyek **Olist Data Platform**, saya menggunakan beberapa ala
 | Docker Desktop | Menjalankan infrastruktur lokal PostgreSQL, Kafka, MinIO, dan Jupyter. |
 
 **Batas penggunaan AI:** ChatGPT digunakan sebagai pendamping pembelajaran dan pengembangan. Kode dan perintah yang disarankan dijalankan serta diperiksa menggunakan dataset Olist pada lingkungan lokal. Hasil pengujian yang belum dilaksanakan tidak diklaim sebagai keberhasilan implementasi.
+
+## T1 — Bronze Ingestion
+
+### Mengapa Bronze harus append-only?
+
+Bronze merupakan lapisan penyimpanan data mentah yang berfungsi sebagai sumber historis untuk proses pengolahan berikutnya. Prinsip **append-only** berarti ketika sebuah file sumber berubah, sistem menyimpan file tersebut sebagai versi baru tanpa menimpa atau menghapus versi sebelumnya.
+
+Pendekatan ini penting karena:
+
+1. **Auditabilitas:** perubahan data dapat ditelusuri melalui checksum SHA-256, waktu ingest, dan riwayat versi pada manifest JSON.
+2. **Reproduksibilitas:** hasil analisis terdahulu dapat direproduksi menggunakan versi data yang sama.
+3. **Pemulihan kesalahan:** apabila file baru ternyata rusak atau mengalami perubahan yang tidak diinginkan, versi sebelumnya masih tersedia.
+4. **Idempotensi:** file dengan checksum yang sama tidak perlu diunggah ulang.
+
+### Skenario pada dataset Olist
+
+Misalnya, file `olist_order_payments_dataset.csv` menerima pembaruan, tetapi terjadi kesalahan saat ekspor sehingga beberapa nilai `payment_value` berubah atau hilang.
+
+Jika Bronze menimpa file lama, kita akan kehilangan data pembayaran asli dan sulit mengetahui apakah perbedaan total pembayaran berasal dari transaksi yang sebenarnya atau dari kesalahan proses ekspor.
+
+Dengan penyimpanan append-only, kedua versi tetap tersedia. Kita dapat membandingkan checksum, jumlah baris, dan nilai pembayaran, kemudian menggunakan versi lama untuk memulihkan proses pengolahan Silver serta mereproduksi hasil analisis sebelumnya.
+
+### Bukti implementasi
+
+Bronze ingestion menggunakan MinIO pada bucket `bronze`. Setiap CSV disimpan menggunakan object key berbasis SHA-256, sedangkan `manifest.json` menyimpan metadata dan riwayat versi.
+
+Hasil pengujian:
+
+- Sembilan dataset berhasil diingest.
+- Ingestion berulang menghasilkan sembilan status `unchanged`.
+- Perubahan satu byte pada salinan `product_category_name_translation.csv` menghasilkan status `new_version`.
+- Kedua versi tetap tersedia di MinIO.
+- Penunjuk `latest` berhasil dikembalikan ke CSV asli.
+- Seluruh sembilan manifest lolos validasi.
+
+Rincian implementasi dan hasil pengujian tersedia dalam `outputs/bronze_report.md`.

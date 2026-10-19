@@ -24,3 +24,10 @@ Thumbs.db
 
 # Riwayat eksekusi Bronze (runtime)
 outputs/bronze_runs.jsonl
+
+# T2 - Generated Silver Parquet artifacts
+outputs/silver/*.parquet
+
+# Temporary directories from Silver publication
+outputs/silver.new-*/
+outputs/silver.backup-*/

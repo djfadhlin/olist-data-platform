@@ -275,3 +275,334 @@ python -B -m scripts.test_raw_loader_failure
 ```
 
 File CSV di `data/raw/` tidak dimodifikasi oleh pipeline. Data Silver Parquet produksi disimpan secara lokal tetapi diabaikan Git; kode, laporan Markdown, dan pengujian disimpan untuk reproduksibilitas.
+---
+
+## T3 — Kafka Streaming Replay, DLQ, dan Recovery
+
+### Arsitektur streaming
+
+Pipeline streaming mereplay lifecycle order dari PostgreSQL `raw.olist_orders_dataset` ke Apache Kafka.
+
+Komponen utama:
+
+| Komponen | Implementasi |
+|---|---|
+| Event generator | `olist/events.py` |
+| Producer | `scripts/produce_orders.py` |
+| Topic utama | `olist.order_events` |
+| Kafka key | `order_id` |
+| Consumer group | `olist-stream-consumer-v1` |
+| Consumer | `scripts/consume_orders.py` |
+| Event log | `stream.order_events` |
+| Current status | `stream.order_current` |
+| Kafka DLQ | `olist.order_events.dlq` |
+| PostgreSQL DLQ | `stream.order_dlq` |
+
+Setiap event menggunakan `event_id` deterministik berdasarkan kombinasi `order_id` dan `status`.
+
+Primary key `event_id` pada `stream.order_events` mencegah event valid yang sama disimpan lebih dari sekali.
+
+Consumer memperbarui status terkini berdasarkan `status_rank` sehingga event yang datang terlambat tidak menurunkan status order.
+
+### Fault injection dan hasil full replay
+
+Producer menyimulasikan kondisi streaming yang tidak ideal:
+
+- Duplikat: 3% dari event dasar.
+- Delayed event: 2% dari event dasar.
+- Corrupt event: 0,5% dari event dasar.
+
+Hasil full replay:
+
+| Metrik | Hasil |
+|---|---:|
+| Source orders | 99.441 |
+| Base lifecycle events | 394.713 |
+| Kafka messages acknowledged | 406.554 |
+| Kafka messages consumed | 406.554 |
+| Duplicate classification | 15.781 |
+| Out-of-order classification | 14.558 |
+| DLQ messages | 1.974 |
+| Producer duration | 50,17 detik |
+| Consumer duration termasuk idle | 528,17 detik |
+| Freshness p50 | 219.331,61 ms |
+| Freshness p95 | 442.934,87 ms |
+
+Jumlah `duplicate` pada consumer mencakup event yang sudah tersimpan dari pengujian sebelumnya, selain duplikat yang sengaja disisipkan pada full replay.
+
+Pada consumer, `new` berarti event yang memperbarui current status. `out_of_order` berarti event valid yang dicatat di event log tetapi tidak mengubah current status.
+
+Keduanya merupakan klasifikasi berbeda dan tidak boleh disamakan dengan total event valid unik.
+
+Metrik freshness diukur dari `produced_at` sampai waktu konsumsi. Backlog consumer menyebabkan sebagian event mempunyai freshness yang tinggi.
+
+Target full replay kurang dari lima menit belum terbukti tercapai. Optimasi consumer dan pengukuran ulang masih diperlukan.
+
+Rincian tersedia pada `outputs/stream_report.md` dan `outputs/producer_manifest.json`.
+
+### Penanganan corrupt event
+
+Pesan yang tidak memenuhi kontrak event diarahkan ke:
+
+1. Topic Kafka `olist.order_events.dlq`.
+2. Tabel PostgreSQL `stream.order_dlq`.
+
+Tabel DLQ PostgreSQL menggunakan kombinasi source topic, partition, dan offset untuk menghindari penggandaan catatan source message yang sama.
+
+Publikasi ke topic Kafka DLQ belum berada dalam satu transaksi atomik dengan penyimpanan database. Karena itu, pesan DLQ Kafka masih berpotensi terduplikasi jika terjadi crash dan pesan diproses kembali.
+
+Batasan ini diterima sebagai bagian dari desain at-least-once processing, tetapi harus diperhitungkan oleh sistem yang mengonsumsi DLQ.
+
+### Recovery status order
+
+Pada full replay pertama, 99.441 order sudah mempunyai current status, tetapi terdapat 490 status yang belum cocok dengan `raw.order_status`.
+
+Penyebab yang ditemukan adalah hilangnya sebagian event final valid akibat injeksi corrupt yang menggantikan event asal.
+
+Pemulihan dilakukan dengan:
+
+1. Membandingkan `stream.order_current` terhadap status sumber pada PostgreSQL `raw`.
+2. Menghasilkan ulang final lifecycle event yang valid.
+3. Mengirim event recovery melalui Kafka.
+4. Memproses ulang event menggunakan consumer yang sama.
+5. Menjalankan verifikasi status seluruh order.
+
+Recovery tahap pertama berhasil memproses 365 event. Setelah producer recovery mengalami timeout, proses dijalankan ulang untuk 125 status tersisa.
+
+Hasil final:
+
+| Pemeriksaan | Hasil |
+|---|---:|
+| Total orders | 99.441 |
+| Orders with current status | 99.441 |
+| Missing orders | 0 |
+| Status mismatches | 0 |
+| Recovery events processed | 490 |
+| Final reconciliation | PASS |
+
+Tidak dilakukan `UPDATE` manual pada status PostgreSQL untuk recovery tersebut.
+
+Recovery saat ini bersifat rekonsiliasi berbasis sumber batch `raw`, bukan perbaikan DLQ secara otomatis.
+
+Bukti: `outputs/stream_status_reconciliation.txt`.
+
+### Skenario crash consumer dan offset commit
+
+Consumer menggunakan manual Kafka offset commit.
+
+Urutan pemrosesan normal:
+
+1. Consumer membaca pesan Kafka.
+2. Event divalidasi.
+3. Event valid disimpan ke PostgreSQL menggunakan `event_id` deterministik.
+4. Current order status diperbarui bila status lebih maju.
+5. Transaksi PostgreSQL di-commit.
+6. Offset Kafka di-commit setelah transaksi database selesai.
+
+Jika proses mati setelah PostgreSQL commit tetapi sebelum Kafka offset commit, Kafka dapat mengirim kembali pesan yang sama setelah consumer restart.
+
+Karena `event_id` merupakan primary key dan operasi penulisan menggunakan penanganan konflik, event tersebut tidak membuat duplikasi log event.
+
+Current status juga tidak boleh mundur ketika menerima event lama.
+
+Dengan demikian, desain database mendukung pemrosesan ulang yang idempoten, meskipun delivery Kafka bersifat at-least-once.
+
+Pengujian restart tanpa pesan baru telah berhasil. Namun, controlled process-kill tepat di antara database commit dan offset commit belum diuji secara eksplisit. Uji tersebut masih menjadi pekerjaan T6.
+
+### Cara menjalankan T3
+
+Prasyarat: PostgreSQL dan Kafka aktif.
+
+Persiapan:
+
+```powershell
+python -B -m scripts.create_stream_tables
+python -B -m scripts.create_kafka_topics
+```
+
+Jalankan consumer dan producer pada dua terminal berbeda.
+
+Terminal 1:
+
+```powershell
+python -B -m scripts.consume_orders --idle-seconds 60
+```
+
+Terminal 2:
+
+```powershell
+python -B -m scripts.produce_orders
+```
+
+Setelah consumer selesai:
+
+```powershell
+python -B -m scripts.verify_stream_status
+```
+
+Apabila terdapat status mismatch, recovery tersedia melalui:
+
+```powershell
+python -B -m scripts.replay_missing_final_events --limit 99441
+python -B -m scripts.consume_orders --idle-seconds 5
+python -B -m scripts.verify_stream_status
+```
+
+Catatan: menjalankan producer penuh kembali pada topic dan database yang sama akan menghasilkan pemrosesan ulang. Karena itu, metrik eksperimen harus dipisahkan berdasarkan run.
+
+---
+
+## T4 — Dimensional Data Warehouse
+
+### Arsitektur dan grain
+
+Data Warehouse dibangun dalam schema PostgreSQL `dw` menggunakan SQL yang disimpan pada `sql/dw_build.sql`.
+
+| Tabel | Grain | Jumlah baris |
+|---|---|---:|
+| `dw.dim_date` | Satu kalender tanggal | 1.827 |
+| `dw.dim_customer` | Satu orang unik | 96.096 |
+| `dw.dim_product` | Satu produk | 32.951 |
+| `dw.dim_seller` | Satu seller | 3.095 |
+| `dw.dim_geo` | Satu ZIP prefix valid atau UNKNOWN | 18.677 |
+| `dw.fact_order` | Satu order | 99.441 |
+| `dw.fact_order_item` | Satu item dalam order | 112.650 |
+| `dw.fact_payment` | Satu urutan pembayaran dalam order | 103.886 |
+| `dw.fact_review` | Satu review terpilih per order | 98.673 |
+
+Seluruh tabel memiliki primary key yang dipasang pada PostgreSQL.
+
+Foreign key diterapkan pada hubungan fakta dan dimensi, bukan sekadar didokumentasikan.
+
+### Identitas customer dan SCD Type 1
+
+`dim_customer` menggunakan `customer_unique_id` sebagai primary key karena satu orang dapat mempunyai beberapa `customer_id` pada transaksi berbeda.
+
+Atribut lokasi customer dipilih dari transaksi terbaru berdasarkan `order_purchase_timestamp`.
+
+Kebijakan ini merupakan Slowly Changing Dimension Type 1.
+
+Keuntungannya adalah dimensi customer mempunyai satu baris per orang dan tidak menggandakan hasil analisis.
+
+Keterbatasannya adalah riwayat perubahan kota, negara bagian, dan ZIP prefix tidak disimpan sebagai versi historis tersendiri.
+
+### Geolocation dan kategori produk
+
+`dim_geo` dibentuk dengan agregasi geolocation berdasarkan ZIP prefix.
+
+Koordinat di luar batas perkiraan Brasil tidak dimasukkan ke dalam agregasi.
+
+Latitude dan longitude diringkas menggunakan rata-rata. Kota dan negara bagian menggunakan nilai yang paling sering muncul.
+
+Baris `UNKNOWN` disediakan untuk customer atau seller yang ZIP prefix-nya tidak ditemukan dalam geolocation valid.
+
+Pada hasil build, terdapat 1.357 customer dan 14 seller yang menggunakan referensi `UNKNOWN`. Seluruh foreign key tetap valid.
+
+`dim_product` memperbaiki nama kolom sumber `product_name_lenght` menjadi `product_name_length`, serta `product_description_lenght` menjadi `product_description_length`.
+
+Kategori produk diterjemahkan ke bahasa Inggris jika tersedia. Jika tidak tersedia, digunakan kategori asal atau nilai `unknown`.
+
+### Kebijakan deduplikasi fact_review
+
+Dataset Olist mempunyai 547 order dengan lebih dari satu review.
+
+Agar `fact_review` memiliki grain satu baris per order, digunakan aturan deterministik berikut:
+
+1. Pilih review dengan `review_answer_timestamp` terbaru.
+2. Jika seri, pilih `review_creation_date` terbaru.
+3. Jika masih seri, gunakan `review_id` terbesar sebagai pemutus seri.
+
+Kolom `review_count` menyimpan jumlah review asli untuk setiap order.
+
+Alternatif yang tidak dipilih adalah menggunakan rata-rata semua skor review dalam satu order.
+
+Alternatif tersebut dapat merepresentasikan seluruh penilaian, tetapi menghasilkan skor gabungan yang bukan merupakan skor satu review asli.
+
+Dampak terhadap Q2: rata-rata skor review untuk order terlambat dan tepat waktu dihitung dari satu review representatif per order. Hasilnya dapat berbeda dari metode yang menghitung setiap review mentah atau merata-ratakan seluruh review per order.
+
+Karena itu, kebijakan review harus tetap konsisten antara warehouse, mart, dan dashboard.
+
+### Order tanpa pasangan dan is_late
+
+`fact_order` mempertahankan seluruh 99.441 order, termasuk:
+
+| Kondisi | Jumlah |
+|---|---:|
+| Order tanpa item | 775 |
+| Order tanpa pembayaran | 1 |
+| Order dengan minimal satu review | 98.673 |
+| Order berstatus delivered | 96.478 |
+
+Kolom `has_no_items` dan `has_no_payment` membedakan order yang tidak mempunyai pasangan data.
+
+Kolom `is_late` menggunakan tiga kemungkinan nilai:
+
+- `TRUE`: tanggal delivered lebih lambat daripada estimasi.
+- `FALSE`: tanggal delivered sama atau lebih awal daripada estimasi.
+- `NULL`: order belum delivered, atau tanggal yang diperlukan tidak tersedia.
+
+Perbandingan dilakukan pada level tanggal, bukan timestamp penuh, agar delivery pada hari estimasi tidak keliru dikategorikan terlambat.
+
+### Dimensi tanggal
+
+`dim_date` menyediakan atribut tahun, bulan, hari, kuartal, dan hari dalam minggu.
+
+Kolom `is_complete_month` menandai Januari 2017 sampai Agustus 2018 sebagai bulan lengkap untuk kebutuhan analisis.
+
+Bulan lain tetap disimpan dan dapat dikecualikan secara eksplisit oleh query mart.
+
+### Idempotensi full rebuild
+
+Warehouse dibangun menggunakan pendekatan full rebuild dari tabel PostgreSQL `raw`.
+
+Perintah rebuild menjalankan SQL dalam satu transaksi PostgreSQL.
+
+Jika validasi atau proses build gagal sebelum commit, transaksi di-rollback sehingga build parsial tidak dipublikasikan.
+
+Pendekatan ini idempoten selama sumber `raw` tidak berubah.
+
+Konsekuensinya, rebuild schema `dw` dapat memengaruhi objek turunan yang bergantung padanya. Mart downstream harus dibangun ulang setelah rebuild DW jika diperlukan.
+
+### Hasil pengujian T4
+
+| Pengujian | Hasil |
+|---|---|
+| Build sembilan tabel | PASS |
+| Pemeriksaan integritas SQL | 20 pemeriksaan, 0 pelanggaran |
+| Pytest database | 26 passed |
+| Rebuild kedua | PASS |
+| Pytest setelah rebuild | 26 passed |
+| Jumlah baris setelah rebuild | Tidak berubah |
+| Durasi build pertama | 7,27 detik |
+| Durasi rebuild kedua | 9,29 detik |
+
+Pengujian mencakup grain, primary key, foreign key, orphan records, kategori produk, geolocation, review count, dan aturan keterlambatan.
+
+### Cara menjalankan T4
+
+Dari root proyek `starter`:
+
+```powershell
+python -B -m scripts.build_dw
+python -m pytest tests/test_dw_integrity.py -q
+```
+
+Bukti implementasi tersedia pada:
+
+- `sql/dw_build.sql`
+- `scripts/build_dw.py`
+- `tests/test_dw_integrity.py`
+- `outputs/dw_report.md`
+
+---
+
+## Status pengembangan berikutnya
+
+T0, T1, T2, dan implementasi utama T4 sudah selesai.
+
+T3 telah berhasil memproses full replay Kafka dan mencapai rekonsiliasi status akhir 100% setelah recovery. Namun, optimasi throughput, pengujian crash terkontrol, dan pengujian gangguan broker masih perlu diselesaikan.
+
+T5 Gold Marts dan Dashboard serta T6 Failure Tests, Evidence, Runbook, dan Demo belum selesai pada checkpoint dokumentasi ini.
+
+Antarmuka satu pintu `python pipeline.py <tahap>` juga masih perlu dilengkapi sebelum penilaian final.
+

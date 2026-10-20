@@ -131,10 +131,6 @@ def handle_batch(conn, dlq_producer, records):
             result = process_event(conn, event)
             counts[result] += 1
 
-            if result == "out_of_order":
-                counts["out_of_order"] += 1
-                counts["new"] -= 1
-
             consumed_at = datetime.now(timezone.utc)
             lag_ms = (
                 consumed_at - event["produced_at"]

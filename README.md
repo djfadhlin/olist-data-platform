@@ -1,28 +1,101 @@
-# Starter — Tugas Besar Olist Data Platform
+# Olist Data Platform — Tugas Besar Data Engineering
 
-Isi starter ini **sengaja sedikit**: stack yang sama dengan Local Big Data Lab, pemeriksa dataset, kerangka `pipeline.py`,
-dan tiga template dokumen. Sisanya kamu bangun mengikuti `TUGAS_BESAR.md`.
+Platform data lokal untuk sembilan dataset **Brazilian E-Commerce (Olist)**. Pipeline menggabungkan ingestion ber-versi di MinIO, transformasi Parquet dengan quality gate, penyimpanan PostgreSQL, replay Kafka, star schema, enam Gold Mart, dan dashboard Jupyter.
 
+## Ringkasan hasil yang sudah diuji
+
+| Aspek | Bukti hasil |
+|---|---|
+| Dataset CSV Olist | 9 file, 1.550.922 baris |
+| Bronze, Silver, PostgreSQL Raw | 1.550.922 baris; quarantine 0 |
+| Soft-quality flags | 13.344 flag (bukan jumlah baris unik) |
+| Kafka final-status reconciliation | 99.441 order, 0 hilang, 0 mismatch **setelah recovery** |
+| Data warehouse | 9 tabel; 20 pemeriksaan integritas dengan 0 pelanggaran |
+| Gold | 6 mart dan 6 ekspor CSV |
+| Automated test DW + Gold | 55/55 lulus |
+| Failure injection | 5/5 skenario T6 terdeteksi sesuai cakupan test |
+| Performa Kafka | Full consumer replay 528,17 detik; target kurang dari 300 detik **belum terpenuhi** |
+
+Angka di atas berasal dari hasil pengujian yang sudah tercatat, bukan janji bahwa clean-room deployment baru pasti menghasilkan output identik tanpa langkah recovery. Lihat [`EVALUATION_EVIDENCE.md`](EVALUATION_EVIDENCE.md) untuk rincian, sumber angka, dan batasan.
+
+## Arsitektur dan komponen
+
+```text
+9 CSV Olist (data/raw)
+        |
+        v
+MinIO Bronze (SHA-256 + manifest versi)
+        |
+        v
+Silver Parquet + Quality Gate ------> soft_quality_flags.parquet
+        |
+        v
+PostgreSQL raw.* --------------------> Kafka producer (order lifecycle)
+        |                                       |
+        v                                       v
+PostgreSQL dw.*                          olist.order_events
+        |                                       |
+        v                                       v
+PostgreSQL mart.*                    Consumer + PostgreSQL stream.*
+        |                                       |
+        +---------- mart.stream_freshness <----+
+        |
+        v
+Gold CSV + Jupyter dashboard
 ```
-docker-compose.yml   .env.example   jupyter/Dockerfile      # stack (postgres, kafka, kafka-ui, minio, jupyter) — project name "olist"
-pipeline.py                                                 # init/up/down sudah jadi; tahap lain = TODO kamu
-scripts/check_dataset.py                                    # cek 9 file CSV Kaggle di data/raw
-sql/00_schemas.sql                                          # hanya CREATE SCHEMA; tabel kamu yang rancang
-tests/conftest.py                                           # fixture koneksi Postgres untuk test (skip kalau stack mati)
-docs/DATA_CONTRACT_TEMPLATE.md  RUNBOOK_TEMPLATE.md  EVALUATION_EVIDENCE_TEMPLATE.md
-```
 
-Langkah pertama:
+Stack Docker Compose: **PostgreSQL 16, Apache Kafka 3.9, MinIO, Kafka UI, dan JupyterLab**. Entry point utama adalah `pipeline.py`; SQL warehouse di `sql/dw_build.sql`, SQL mart di `sql/mart_build.sql`, dan pengujian di `tests/`.
 
-```
-pip install -r requirements.txt
+## Persiapan lokal
+
+Gunakan Python 3.11, Docker Desktop + Docker Compose, dan sembilan CSV sumber asli di `data/raw/`. Buat virtual environment dan instal dependensi yang terdaftar di `requirements.txt` terlebih dahulu (langkah setup Python ini **di luar** hitungan 10 perintah pipeline). Atur `.env` mengikuti `.env.example`. Jangan commit `.env` atau kredensial.
+
+## Urutan utama pipeline (10 perintah)
+
+Jalankan dari root repository dengan virtual environment aktif:
+
+```powershell
 python pipeline.py init
-python pipeline.py up --build        # pertama kali: build image jupyter (±2–3 menit)
-# unduh dataset Kaggle → data/raw/
-python scripts/check_dataset.py
+python pipeline.py up
+python pipeline.py check
+python pipeline.py profile
+python pipeline.py bronze
+python pipeline.py silver --upload
+python pipeline.py load
+python pipeline.py stream --run --limit 99441
+python pipeline.py model
+python pipeline.py marts
 ```
 
-Lalu buka `TUGAS_BESAR.md` → Tahap 0.
+**Batas verifikasi:** urutan di atas adalah rancangan jalur utama, bukan klaim clean-run sepenuhnya terbukti dalam 10 perintah. Khususnya, full Kafka replay dapat memerlukan *recovery* untuk event final yang rusak dan stream verification tambahan. Pastikan profil T0 menggunakan entry point yang tersedia; perintah `profile` belum dikonfirmasi ulang melalui pengujian akhir. Lihat [`RUNBOOK.md`](RUNBOOK.md) untuk pemeriksaan dan prosedur recovery. Pada environment yang sudah terisi, jangan mengulang full replay tanpa alasan.
+
+Perintah aman untuk verifikasi kondisi yang sudah dibangun:
+
+```powershell
+python pipeline.py stream --verify-only
+python pipeline.py test
+python pipeline.py status
+python pipeline.py report
+```
+
+Dashboard: `notebooks/olist_t5_dashboard.ipynb`. Bila ingin menjalankan failure injection secara eksplisit, gunakan `python pipeline.py inject --scenario f01` hingga `f05`; skenario `f04` dan `f05` mensyaratkan `--yes` karena mengganggu broker atau merebuild batch. **Jangan gunakan `docker compose down -v` untuk troubleshooting rutin.**
+
+## Dokumen dan bukti penilaian
+
+| Artefak | Isi |
+|---|---|
+| [`RUNBOOK.md`](RUNBOOK.md) | Startup, verifikasi, recovery, troubleshooting, reset warning |
+| [`EVALUATION_EVIDENCE.md`](EVALUATION_EVIDENCE.md) | Durasi, row counts, Q1–Q4, integrity, keputusan desain, limitations |
+| [`outputs/failure_tests.md`](outputs/failure_tests.md) | F01–F05: injeksi, gejala, deteksi, verdict, recovery |
+| `outputs/f04_kafka_outage.json` | Bukti mesin broker outage dan recovery |
+| `outputs/f05_batch_rerun.json` | Bukti mesin snapshot before/after batch rerun |
+| [`outputs/stream_report.md`](outputs/stream_report.md) | Full Kafka replay historis, termasuk keterbatasan throughput |
+| [`outputs/dw_report.md`](outputs/dw_report.md) | Grain/foreign key, integrity, data anomalies |
+| [`outputs/marts_report.md`](outputs/marts_report.md) | Revenue, lateness, seller, RFM, payment reconciliation |
+
+**Catatan:** File JSON F04/F05 berada di pola ignore `outputs/*.json` sehingga perlu di-*force-add* secara selektif saat Git commit. Hasil F02 dan F03 dicatat dari output terminal historis, bukan dari JSON independen.
+
+---
 
 ## Pertanyaan README — T0: Data Contract & Profiling
 
@@ -338,7 +411,7 @@ Metrik freshness diukur dari `produced_at` sampai waktu konsumsi. Backlog consum
 
 Target full replay kurang dari lima menit belum terbukti tercapai. Optimasi consumer dan pengukuran ulang masih diperlukan.
 
-Rincian tersedia pada `outputs/stream_report.md` dan `outputs/producer_manifest.json`.
+Rincian full replay historis tersedia pada `outputs/stream_report.md`. `outputs/producer_manifest.json` dapat tertimpa oleh replay berikutnya, sehingga bukan bukti tetap untuk full replay awal.
 
 ### Penanganan corrupt event
 
@@ -407,7 +480,7 @@ Current status juga tidak boleh mundur ketika menerima event lama.
 
 Dengan demikian, desain database mendukung pemrosesan ulang yang idempoten, meskipun delivery Kafka bersifat at-least-once.
 
-Pengujian restart tanpa pesan baru telah berhasil. Namun, controlled process-kill tepat di antara database commit dan offset commit belum diuji secara eksplisit. Uji tersebut masih menjadi pekerjaan T6.
+Controlled crash injection F03 kini telah diuji: proses dihentikan dengan exit code 73 sesudah commit PostgreSQL tetapi sebelum commit offset Kafka. Offset tetap pada 136903 setelah crash, lalu maju ke 136904 setelah restart, tanpa penggandaan event. Target event sudah ada di PostgreSQL sebelum injeksi, sehingga test ini belum membuktikan first-time insert sebelum crash. Lihat `outputs/failure_tests.md`.
 
 ### Cara menjalankan T3
 
@@ -596,15 +669,9 @@ Bukti implementasi tersedia pada:
 
 ---
 
-## Status pengembangan berikutnya
+## Status implementasi dan keterbatasan yang masih terbuka
 
-T0, T1, T2, dan implementasi utama T4 sudah selesai.
-
-T3 telah berhasil memproses full replay Kafka dan mencapai rekonsiliasi status akhir 100% setelah recovery. Namun, optimasi throughput, pengujian crash terkontrol, dan pengujian gangguan broker masih perlu diselesaikan.
-
-T5 Gold Marts dan Dashboard serta T6 Failure Tests, Evidence, Runbook, dan Demo belum selesai pada checkpoint dokumentasi ini.
-
-Antarmuka satu pintu `python pipeline.py <tahap>` juga masih perlu dilengkapi sebelum penilaian final.
+T0–T5 telah diimplementasikan; fungsi utama CLI `pipeline.py` dan dua generator laporan T6 telah diuji. Kelima skenario failure injection sudah dijalankan dan tercatat di `outputs/failure_tests.md`. Consumer full replay historis **belum** memenuhi target lima menit (528,17 detik), sehingga optimasi dan pengukuran ulang masih menjadi pekerjaan teknis. Bukti fresh-environment run sepuluh perintah dan penyiapan demo akhir juga belum dinyatakan tervalidasi sepenuhnya.
 
 
 ---
@@ -730,5 +797,34 @@ Hasil verifikasi:
 - Rebuild kedua mempertahankan jumlah baris dan hasil pengujian.
 - Dashboard berhasil dieksekusi dengan lima grafik.
 
-T5 selesai pada checkpoint ini. Pekerjaan reliabilitas T3 dan persyaratan T6 masih perlu diselesaikan sebelum final submission.
+T5 telah lulus pengujian DW/Gold. T6 failure injection telah dijalankan dan dibuktikan dalam `outputs/failure_tests.md`, sementara target performa full Kafka replay tetap terbuka.
 
+---
+
+## T6 — Failure Injection, Reproducibility, dan Evaluasi
+
+Lima skenario telah diuji pada lingkungan yang sudah berisi data proyek:
+
+| ID | Gangguan | Gejala/deteksi yang diamati | Pemulihan dan hasil |
+|---|---|---|---|
+| F01 | CSV orders kehilangan kolom wajib `order_id` (file sementara) | `ValueError`, validator menyebut `missing=['order_id']` | Header sumber asli tidak berubah; **TERTANGKAP** |
+| F02 | Producer dua kali untuk 20 order dan seed 42 | 164 pesan diproses sebagai duplikat; 0 duplikat `event_id` | DB tetap 393.251 event unik dan 99.441 current order; **TERTANGKAP** |
+| F03 | Consumer crash sesudah DB commit, sebelum offset Kafka commit | Exit code 73; offset tertahan 136903 | Restart membaca ulang event, commit 136904, tanpa duplikat; **TERTANGKAP** |
+| F04 | Single Kafka broker dihentikan saat replay | `KafkaConnectionError: socket disconnected` | Broker restart, producer retry lewat replay ulang, status 99.441 cocok; **TERTANGKAP** |
+| F05 | Bronze → Silver → Raw → DW → Gold dijalankan ulang | Fingerprint source/Bronze/Silver/DB sebelum dan sesudah tetap sama | 1.550.922 Silver rows, 55 tes lulus; **TERTANGKAP** |
+
+**Cakupan:** F03 menggunakan event yang sebelumnya sudah ada di database; F05 tidak membandingkan isi `soft_quality_flags.parquet` dan beberapa kolom audit yang volatile; F02/F03 bersumber dari hasil terminal historis. Kafka single-broker tidak menjamin high availability, dan publikasi DLQ Kafka tidak atomik bersama commit PostgreSQL.
+
+Perintah untuk membuat ulang laporan (tanpa mengulangi outage/rebuild):
+
+```powershell
+python pipeline.py report
+```
+
+Perintah tersebut menjalankan `scripts.generate_failure_report` lalu `scripts.generate_evaluation_evidence`. Bukti lebih lengkap tersedia di `outputs/failure_tests.md` dan `EVALUATION_EVIDENCE.md`.
+
+### Keputusan desain dan eksperimen lanjutan
+
+Keputusan penting meliputi Bronze content-addressed append-only, Silver quality gate per tabel, Raw transaksional `TRUNCATE + COPY`, Kafka *at-least-once* dengan `event_id` deterministik, `dim_customer` SCD Type 1, dan Gold Marts berbasis SQL yang tervalidasi. Perbandingan alternatif serta alasannya tercantum di `EVALUATION_EVIDENCE.md`.
+
+Prioritas eksperimen: benchmark consumer full replay di bawah 300 detik, crash setelah *first insert* baru, perluasan snapshot F05 ke soft flags, serta investigasi selisih pembayaran bersama sumber ledger.

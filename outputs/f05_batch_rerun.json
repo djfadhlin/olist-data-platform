@@ -1,0 +1,108 @@
+{
+  "scenario": "F05_FULL_BATCH_RERUN",
+  "started_at_utc": "2026-10-20T10:05:54.809467+00:00",
+  "steps": [
+    {
+      "step": "Bronze",
+      "seconds": 4.86,
+      "exit_code": 0
+    },
+    {
+      "step": "Silver",
+      "seconds": 40.94,
+      "exit_code": 0
+    },
+    {
+      "step": "Raw",
+      "seconds": 9.37,
+      "exit_code": 0
+    },
+    {
+      "step": "DW",
+      "seconds": 11.35,
+      "exit_code": 0
+    },
+    {
+      "step": "Gold Marts",
+      "seconds": 6.27,
+      "exit_code": 0
+    }
+  ],
+  "verdict": "TERTANGKAP",
+  "checks": {
+    "source": true,
+    "bronze": true,
+    "silver": true,
+    "postgres": true
+  },
+  "source_csv_count": 9,
+  "bronze_dataset_count": 9,
+  "silver_parquet_count": 9,
+  "silver_total_rows": 1550922,
+  "postgres_rows_before": {
+    "raw": {
+      "olist_customers_dataset": 99441,
+      "olist_geolocation_dataset": 1000163,
+      "olist_order_items_dataset": 112650,
+      "olist_order_payments_dataset": 103886,
+      "olist_order_reviews_dataset": 99224,
+      "olist_orders_dataset": 99441,
+      "olist_products_dataset": 32951,
+      "olist_sellers_dataset": 3095,
+      "product_category_name_translation": 71
+    },
+    "dw": {
+      "dim_customer": 96096,
+      "dim_date": 1827,
+      "dim_geo": 18677,
+      "dim_product": 32951,
+      "dim_seller": 3095,
+      "fact_order": 99441,
+      "fact_order_item": 112650,
+      "fact_payment": 103886,
+      "fact_review": 98673
+    },
+    "mart": {
+      "customer_rfm": 96096,
+      "delivery_performance": 565,
+      "monthly_sales": 11670,
+      "payment_reconciliation": 99441,
+      "seller_scorecard": 3095,
+      "stream_freshness": 13
+    }
+  },
+  "postgres_rows_after": {
+    "raw": {
+      "olist_customers_dataset": 99441,
+      "olist_geolocation_dataset": 1000163,
+      "olist_order_items_dataset": 112650,
+      "olist_order_payments_dataset": 103886,
+      "olist_order_reviews_dataset": 99224,
+      "olist_orders_dataset": 99441,
+      "olist_products_dataset": 32951,
+      "olist_sellers_dataset": 3095,
+      "product_category_name_translation": 71
+    },
+    "dw": {
+      "dim_customer": 96096,
+      "dim_date": 1827,
+      "dim_geo": 18677,
+      "dim_product": 32951,
+      "dim_seller": 3095,
+      "fact_order": 99441,
+      "fact_order_item": 112650,
+      "fact_payment": 103886,
+      "fact_review": 98673
+    },
+    "mart": {
+      "customer_rfm": 96096,
+      "delivery_performance": 565,
+      "monthly_sales": 11670,
+      "payment_reconciliation": 99441,
+      "seller_scorecard": 3095,
+      "stream_freshness": 13
+    }
+  },
+  "differences": {},
+  "finished_at_utc": "2026-10-20T10:07:23.045413+00:00"
+}

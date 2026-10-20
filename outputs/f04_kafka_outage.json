@@ -1,0 +1,33 @@
+{
+  "scenario": "F04_KAFKA_BROKER_OUTAGE",
+  "started_at_utc": "2026-10-20T09:53:59.251930+00:00",
+  "finished_at_utc": "2026-10-20T09:54:41.507195+00:00",
+  "orders_replayed": 100,
+  "seed": 42,
+  "delay_ms": 50,
+  "outage_seconds": 6,
+  "producer_exit_during_outage": 1,
+  "producer_stdout_tail": "=== T3 ASYNC KAFKA PRODUCER ===\nOrders: 100\nBase events: 397\nMessages to send: 409\n",
+  "producer_stderr_tail": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"C:\\18. Bangalore\\3_tugas\\3. Tugas Mas Bayuzen\\Tugas mini project 2\\starter\\scripts\\produce_orders.py\", line 186, in <module>\n    main()\n  File \"C:\\18. Bangalore\\3_tugas\\3. Tugas Mas Bayuzen\\Tugas mini project 2\\starter\\scripts\\produce_orders.py\", line 140, in main\n    check_pending()\n  File \"C:\\18. Bangalore\\3_tugas\\3. Tugas Mas Bayuzen\\Tugas mini project 2\\starter\\scripts\\produce_orders.py\", line 115, in check_pending\n    metadata = future.get(timeout=60)\n               ^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\18. Bangalore\\3_tugas\\3. Tugas Mas Bayuzen\\Tugas mini project 2\\starter\\.venv\\Lib\\site-packages\\kafka\\producer\\future.py\", line 65, in get\n    raise self.exception # pylint: disable-msg=raising-bad-type\n    ^^^^^^^^^^^^^^^^^^^^\nkafka.errors.KafkaConnectionError: KafkaConnectionError: socket disconnected\n",
+  "db_before": {
+    "events": 393251,
+    "current": 99441
+  },
+  "db_after": {
+    "events": 393251,
+    "current": 99441,
+    "duplicate_ids": 0
+  },
+  "status_regressions": 0,
+  "checks": {
+    "outage_observed": true,
+    "broker_recovered": true,
+    "rerun_succeeded": true,
+    "consumer_succeeded": true,
+    "no_duplicate_event_ids": true,
+    "no_status_regressions": true,
+    "event_count_not_decreased": true,
+    "current_count_not_decreased": true
+  },
+  "verdict": "TERTANGKAP"
+}

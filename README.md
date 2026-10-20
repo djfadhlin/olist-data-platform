@@ -606,3 +606,129 @@ T5 Gold Marts dan Dashboard serta T6 Failure Tests, Evidence, Runbook, dan Demo 
 
 Antarmuka satu pintu `python pipeline.py <tahap>` juga masih perlu dilengkapi sebelum penilaian final.
 
+
+---
+
+## T5 — Gold Marts & Dashboard
+
+### Ringkasan implementasi
+
+Tahap T5 membangun enam tabel analitik pada schema PostgreSQL `mart`, mengekspor hasilnya menjadi CSV Gold, dan menyediakan dashboard Jupyter yang membaca data PostgreSQL.
+
+| Mart | Grain | Jumlah baris |
+|---|---|---:|
+| `mart.monthly_sales` | Bulan x kategori x state | 11.670 |
+| `mart.delivery_performance` | Bulan x state | 565 |
+| `mart.seller_scorecard` | Seller | 3.095 |
+| `mart.customer_rfm` | Customer unik | 96.096 |
+| `mart.stream_freshness` | Menit konsumsi event | 13 |
+| `mart.payment_reconciliation` | Order | 99.441 |
+
+SQL mart disimpan di `sql/mart_build.sql`. Query ringkasan untuk laporan dan dashboard didefinisikan bersama di `olist/mart_queries.py`.
+
+### Q1 — Pendapatan produk
+
+Revenue didefinisikan sebagai jumlah `price` dari item pada order berstatus `delivered`. Ongkos kirim dipisahkan dari pendapatan produk. Analisis bulanan menggunakan bulan lengkap Januari 2017 sampai Agustus 2018.
+
+Pada periode tersebut, revenue produk bulanan tertinggi terjadi pada November 2017, sebesar BRL 987.765,37.
+
+Kategori dengan revenue tertinggi adalah `health_beauty`, sebesar BRL 1.229.557,50.
+
+### Q2 — Keterlambatan dan kepuasan pelanggan
+
+Late rate dihitung dengan penyebut hanya order yang `is_late IS NOT NULL`, bukan seluruh order.
+
+Dari 96.203 order yang dapat dievaluasi pada bulan lengkap, sebanyak 6.531 terlambat. Late rate adalah 6,79%.
+
+Rata-rata review order tepat waktu adalah 4,291/5, sedangkan order terlambat 2,271/5. Selisihnya 2,020 poin.
+
+Setiap order memiliki paling banyak satu review representatif sesuai kebijakan deduplikasi T4.
+
+### Q3 — Seller scorecard
+
+Seller scorecard menghitung jumlah order unik, revenue produk delivered, skor review, dan late rate.
+
+Seller dinilai berdasarkan rasio keterlambatan hanya jika memiliki minimal 30 order yang dapat dievaluasi.
+
+Seller dengan revenue delivered tertinggi pada daftar eligible menghasilkan BRL 226.987,93.
+
+Review dan status keterlambatan merupakan atribut pada level order. Jika satu order melibatkan beberapa seller, metrik order tersebut dapat berkontribusi ke masing-masing seller terkait. Oleh karena itu, agregasi lintas seller tidak boleh digunakan sebagai hitungan order global.
+
+### Q4 — Segmentasi pelanggan RFM
+
+RFM menggunakan `customer_unique_id` sebagai identitas pelanggan.
+
+Recency diukur relatif terhadap satu hari setelah tanggal pembelian delivered terakhir pada dataset, bukan terhadap tanggal saat dashboard dibuka.
+
+Frequency menggunakan aturan diskret berdasarkan jumlah pembelian delivered, bukan kuintil mentah, karena banyak pelanggan hanya membeli satu kali.
+
+Segmen terbesar adalah `AT_RISK`, sebanyak 53.810 pelanggan. Label ini adalah hasil aturan segmentasi yang dipilih dan bukan bukti bahwa seluruh pelanggan tersebut telah berhenti berbelanja secara permanen.
+
+### Streaming freshness
+
+Freshness dihitung sebagai selisih `consumed_at - produced_at` dari event valid unik yang tersimpan di `stream.order_events`.
+
+Mart mengagregasikan metrik per menit konsumsi. Pada hasil dashboard, p95 freshness per menit tertinggi mencapai 458,45 detik.
+
+Mart ini tidak mencakup seluruh pesan Kafka yang diproses, seperti duplikat dan pesan invalid dalam DLQ. Schema event saat ini juga tidak menyediakan identitas batch replay secara eksplisit.
+
+### Rekonsiliasi pembayaran
+
+Rekonsiliasi membandingkan nilai item beserta ongkos kirim terhadap total pembayaran per order, dengan toleransi BRL 0,01.
+
+| Kategori | Order | Selisih absolut (BRL) |
+|---|---:|---:|
+| MATCH | 98.362 | 2,73 |
+| NO_ITEMS | 775 | 162.591,95 |
+| INSTALLMENT_REVIEW | 266 | 3.172,87 |
+| VOUCHER_REVIEW | 7 | 17,48 |
+| NO_PAYMENT | 1 | 143,46 |
+| UNEXPLAINED | 30 | 78,87 |
+
+Sebanyak 98.362 dari 99.441 order cocok, dengan match rate 98,915%. Angka ini melewati kriteria minimal 98%.
+
+### Pertanyaan README T5 — Selisih uang dan pertanyaan ke finance
+
+**Pertanyaan:** Dari rekonsiliasi, berapa total selisih uang yang tidak bisa kamu jelaskan, dan apa yang akan kamu tanyakan ke tim finance Olist?
+
+Total selisih absolut pada 1.079 order yang tidak cocok adalah **BRL 166.004,63**. Angka ini merupakan jumlah nilai absolut per order, bukan selisih bersih setelah nilai positif dan negatif saling menghapus.
+
+Sebanyak **BRL 78,87**, dari 30 order, berada pada kelas `UNEXPLAINED` karena tidak mempunyai petunjuk penyebab dari klasifikasi yang tersedia.
+
+Namun, BRL 166.004,63 tetap merupakan nilai mismatch yang belum direkonsiliasi secara akuntansi. Label `NO_ITEMS`, `VOUCHER_REVIEW`, dan `INSTALLMENT_REVIEW` bukan bukti bahwa selisih tersebut sudah terselesaikan.
+
+Pertanyaan yang akan diajukan kepada tim finance Olist:
+
+1. Apa perlakuan keuangan untuk pembayaran order yang tidak memiliki baris item, khususnya 775 order pada kelas `NO_ITEMS`?
+2. Apakah dataset mempunyai diskon, refund, pembatalan, adjustment, atau komponen transaksi lain yang tidak tersedia dalam tabel item dan pembayaran?
+3. Bagaimana nilai voucher dialokasikan ke total pembayaran dan nilai order?
+4. Apakah `payment_value` untuk transaksi cicilan merepresentasikan nilai pembayaran penuh atau bagian dari jadwal pembayaran?
+5. Dapatkah tim finance menyediakan ledger atau referensi settlement per `order_id` untuk memastikan penyebab selisih?
+
+Sebelum ada konfirmasi tersebut, mismatch tidak boleh diam-diam dianggap sebagai revenue atau dihapus dari laporan.
+
+### Dashboard dan pengujian
+
+Dashboard berada pada `notebooks/olist_t5_dashboard.ipynb`. Visual mencakup Q1, Q2, Q3, Q4, dan freshness stream, serta ringkasan rekonsiliasi.
+
+Dashboard membaca PostgreSQL dan menggunakan query bersama dengan laporan `outputs/marts_report.md`.
+
+Perintah build dan pengujian:
+
+```powershell
+python -B -m scripts.build_marts
+python -m pytest tests/test_dw_integrity.py tests/test_marts.py -q
+```
+
+Hasil verifikasi:
+
+- Enam Gold Marts berhasil dibangun.
+- Enam CSV berhasil diekspor ke `outputs/gold/`.
+- Semua validasi business rules lulus.
+- 29 tes T5 lulus.
+- Gabungan T4 dan T5: 55 tes lulus.
+- Rebuild kedua mempertahankan jumlah baris dan hasil pengujian.
+- Dashboard berhasil dieksekusi dengan lima grafik.
+
+T5 selesai pada checkpoint ini. Pekerjaan reliabilitas T3 dan persyaratan T6 masih perlu diselesaikan sebelum final submission.
+
